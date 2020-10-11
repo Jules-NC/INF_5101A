@@ -11,40 +11,18 @@
 
 #define GRPNAME "Gauss"
 
-int main (int argc, char **argv) {
-	char nom[255];
 
-	int NPROC = 8;
-	int my_tid;
-	int me;
-	int N;
-	int *tids;
-	
-	my_tid = pvm_mytid();
-	NPROC = pvm_siblings( &tids );
-	me = pvm_joingroup( GRPNAME );
-
-	pvm_barrier( GRPNAME, NPROC );
-	pvm_freezegroup ( GRPNAME, NPROC );
-	for (int i = 0; i < NPROC; i++) tids[i] = pvm_gettid ( GRPNAME, i);
-
-	double * tab = (double *)malloc ( N/NPROC*N*sizeof(double));	//assume que N est divisible par NPROC
-
-	matrix_pload(nom, tab, N, NPROC, me);
-	pgauss (tab, N, NPROC, me, tids);
-	matrix_psave("matrix_result", tab, N, NPROC, me, tids, NPROC);
-
-	pvm_lvgroup( GRPNAME );
-	free(tab);
-	pvm_exit();
-}
-
-void matrix_pload( char nom[], double* tab, int N, int NPROC, int me) {
+void matrix_pload( char nom[], double* tab, int N, int NPROC, int me, int * tids) {
 	int i,j;
-	 
 	if ( me == 0 ){		//si je suis main
 		FILE *f;
-		if ((f = fopen (nom, "r")) == NULL) { perror ("matrix_load : fopen "); }	//ouvre le fichier
+		if ((f = fopen (nom, "r")) == NULL) {
+			perror ("matrix_load : fopen ");
+			printf("THEREIS AN ERRORE\n");
+			fflush(0);
+		}	//ouvre le fichier
+
+
 		for ( int i=0; i<N; i++ ) {		//pour chaque ligne i de la matrice M
 			if ( i%NPROC==me ){				//si c'est une ligne pour moi
 				for ( int j=0; j<N; j++ ) {		//pour chaque colonne j 
@@ -57,15 +35,15 @@ void matrix_pload( char nom[], double* tab, int N, int NPROC, int me) {
 				for ( int j=0; j<N; j++ ) {		//pour chaque colonne j 
 					fscanf (f, "%lf", &(buff[j]));		//store l'element Mij dans le tableau temporaire: index j
 				}
-				pvm_pkdouble(&buff, N, 1 );  //prepare to send N doubles with stride 1
-				pvm_send( i%NPROC, 1 );  //dest i%NPROC and tag 1 
+				pvm_pkdouble(buff, N, 1 );  //prepare to send N doubles with stride 1
+				pvm_send( tids[i%NPROC], 1 );  //dest i%NPROC and tag 1 
 			}
 		}
 		fclose (f);
 	}
 	else{	// si je ne suis pas main
 		for ( int i=0; i<N/NPROC; i++ ) {	//pour chaque ligne i de mon tableau tab
-			pvm_recv(0, 1);  //recois du main tag 1
+			pvm_recv(-1, -1);  //recois du main tag 1
 			pvm_upkdouble( tab+i*N, N, 1 ); //store le tableau de N element stride 1 à la ligne i du tableau tab
 		}
 	}
@@ -77,7 +55,11 @@ void matrix_psave(char nom[], double *tab, int N, int NPROC, int me, int *tids)
 	if (me == 0){	//si je suis main
 		FILE *f;
 		double buff[N];
-		if ((f = fopen (nom, "w")) == NULL) { perror ("matrix_save : fopen "); }
+		if ((f = fopen (nom, "w")) == NULL) {
+			perror ("matrix_save : fopen ");
+			printf("THEREIS AN ERRORE IN LOADE\n");
+			fflush(0);
+		}
 		for (int i=0; i<N; i++) {	//pour chaque ligne i
 			if (i%NPROC == 0){	//si c'est le tour du main
 				//saving tab
@@ -87,20 +69,21 @@ void matrix_psave(char nom[], double *tab, int N, int NPROC, int me, int *tids)
 				fprintf (f, "\n");	//termine la ligne
 			}
 			else{			
-				pvm_recv( i%NPROC, i/NPROC);		//reçois du i%NPROC process le msg avec id i/NPROC 
-				pvm_upkdouble( &buff, N, 1 );
+				pvm_recv( tids[i%NPROC], -1);		//reçois du i%NPROC process le msg avec id i/NPROC 
+				pvm_upkdouble( buff, N, 1 );
 				for (int j=0; j<N; j++) {
 					fprintf (f, "%8.2f ", buff[j] );
 				}
 				fprintf (f, "\n");
 			}
+		}
 		fclose (f);
 	}
 	else{	//si je ne suis pas main
 		for(int i=0; i<N/NPROC; i++){
 			pvm_initsend( PvmDataDefault );
 			pvm_pkdouble( tab+N*i, N, 1 );
-			pvm_send( 0, i );	//envoie ma ligne i de tableau avec le tag i
+			pvm_send( tids[0], i );	//envoie ma ligne i de tableau avec le tag i
 		}
 	}					  
 }
@@ -171,29 +154,83 @@ void pgauss ( double * tab, int N, int NPROC, int me, int *tids ) {
 
 	for ( k=0; k<N-1; k++ ){ /* mise a 0 de la col. k */
 		/* printf (". "); */
-		if(k==me){//si c'est à mon tour de partager ma ligne pivot
-			memcpy(ligne_pivot, tab+N*k, N*sizeof(double));	
+		if(me==k%NPROC){//si c'est à mon tour de partager ma ligne pivot
+			memcpy(ligne_pivot, tab+(k/NPROC)*N, N*sizeof(double));	
 			pvm_initsend( PvmDataDefault );
 			pvm_pkdouble( ligne_pivot, N, 1 );	//partage le ligne entiere
-			info = pvm_mcast( tids, NPROC-1, k ); //envoie le message id k aux autres process
+			//int info = pvm_cast( tids, NPROC, k ); //envoie le message id k aux autres process
+			int info = pvm_bcast(GRPNAME, k);
 		}
 		else{ //si ce n'est pas à mon tour de partager le pivot
-			pvm_recv( k%NPROC, k);	//reçois un msg du k%NPROC process id k
+			pvm_recv( tids[k%NPROC], -1);	//reçois un msg du k%NPROC process id k
 			pvm_upkdouble( ligne_pivot , N, 1 );
 		}
 		//partie calcul
 		if ( fabs(*(ligne_pivot+k)) <= 1.0e-11 ) {
-			printf ("ATTENTION: pivot %d presque nul: %g\n", k, *(tab+k+k*N) );
+			//printf ("ATTENTION: pivot %d presque nul: %g\n", k, *(tab+k+k*N) );
+			//fflush(0);
 			exit (-1);
 		}
-		for ( i = (k+NPROC-me)\NPROC ; i<N/NPROC ; i ++){ 
-			pivot = - *(tab+k+i*N) / *(ligne_pivot+k);
+		//printf("PTDR:, i:%d, me:%d, k:%d\n", i, me, k);
+		//fflush(0);
+
+		for ( i = (k+NPROC-me)/NPROC ; i<N/NPROC ; i ++){ 
+
+			pivot = *(tab+k+i*N) / *(ligne_pivot+k);
 			for ( j=k; j<N; j++ ){  //pour les j rien à changer
-				*(tab+j+i*N) = *(tab+j+i*N) + pivot * *(ligne_pivot+j);
+				*(tab+j+i*N) = *(tab+j+i*N) - pivot * *(ligne_pivot+j);
 			}
 			*(tab+k+i*N) = 0.0; //on sait que la colonne k sera à 0
 		}
 	}
 	free(ligne_pivot);
 	printf ("\n");
+}
+
+int main (int argc, char **argv) {
+	char nom[255];
+	strcpy(nom, argv[2]);
+	int NPROC;
+	int my_tid;
+	int me;
+	int N = atoi(argv[1]);
+	int *tids;
+	struct timeval tv1, tv2;	/* for timing */
+	int duree;
+
+
+
+	printf("TEST\n");
+	fflush(0);
+	
+	my_tid = pvm_mytid();
+	NPROC = pvm_siblings( &tids );
+	me = pvm_joingroup( GRPNAME );
+	
+
+	printf("NPROC %d \n", NPROC);
+	fflush(0);
+
+	printf("name: %s \nsize %d\n", nom, N);
+	fflush(0);
+
+	pvm_barrier( GRPNAME, NPROC );
+	pvm_freezegroup ( GRPNAME, NPROC );
+	for (int i = 0; i < NPROC; i++) tids[i] = pvm_gettid ( GRPNAME, i);
+
+	double * tab = (double *)malloc ( N/NPROC*N*sizeof(double));	//assume que N est divisible par NPROC
+
+	matrix_pload(nom, tab, N, NPROC, me, tids);
+
+	gettimeofday( &tv1, (struct timezone*)0 );
+	pgauss (tab, N, NPROC, me, tids);
+	gettimeofday( &tv2, (struct timezone*)0 );
+  	duree = (tv2.tv_sec - tv1.tv_sec) * 1000000 + tv2.tv_usec - tv1.tv_usec;
+
+	matrix_psave("matrix_result", tab, N, NPROC, me, tids);
+  	printf ("computation time: %10.8f sec.\n", duree/1000000.0 );
+
+	pvm_lvgroup( GRPNAME );
+	free(tab);
+	pvm_exit();
 }
