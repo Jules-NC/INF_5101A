@@ -206,6 +206,10 @@ void print_node(NodeInfo node, int root){
 
 int main(int argc, char *argv[])
 {
+	printf("LOL2rir: %ld", sizeof(float));
+	printf("LOL2rir: %ld", sizeof(int));
+
+	
 	struct timeval tv1, tv2;	/* for timing */
 	int status, duration;
 	double MIN_ERROR = atoi(argv[3]);
