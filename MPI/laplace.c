@@ -16,9 +16,14 @@ typedef struct {
 	int internal_lines;
 	double * matrix;
 	double total_error;
+
 } NodeInfo;
 
-void laplace(double * reducedError, int rank, int N, int lignes, double * tab){
+void laplace(NodeInfo * node){
+	 // we modify a non-pointer value (node.total_error), so need struct pointer to avoid copy
+	int N = node->N, lignes = node->lines;
+	double* tab = node->matrix;
+
 	double fnew[N*lignes];
 	double error = 0;
 	for(int i=N; i<N*(lignes-1); i++){ 
@@ -41,21 +46,21 @@ void laplace(double * reducedError, int rank, int N, int lignes, double * tab){
 	for(int i=N; i<N*(lignes-1); i++){
 		tab[i] = fnew[i];	
 	}
-
-	MPI_Allreduce(&error, reducedError, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-
+	
+	MPI_Allreduce(&error, &(node->total_error), 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 }
+
 
 
 void share(NodeInfo node){
 	/**
 	The order here is very important to avoid deadlocks !!!
 	Receive/send comes in pairs.
+
+	We only modify the POINTER tab, so no need to pass by pointer, the size of NodeInfo is limited
 	**/
-	int N = node.N;
-	int rank = node.rank;
+	int N = node.N, rank = node.rank, lines = node.lines;
 	double * tab = node.matrix;
-	int lines = node.lines;
 
 	if(node.NPROCS == 1) return;
 	if(rank == 0){
@@ -78,7 +83,8 @@ void share(NodeInfo node){
 	MPI_Barrier(MPI_COMM_WORLD);
 }
 
-void matrix_pload( char file[], double* tab, int N, int NPROC, int nb_lignes, int rank, MPI_Status status) {
+void matrix_pload( char file[], double* tab, NodeInfo node) {
+	int N = node.N, rank = node.rank, nb_lignes = node.internal_lines;
 	if (rank == 0){		//si je suis main
 		FILE *f;
 		if ((f = fopen (file, "r")) == NULL) {
@@ -86,7 +92,7 @@ void matrix_pload( char file[], double* tab, int N, int NPROC, int nb_lignes, in
 			printf("THEREIS AN ERRORE INZE LODING\n");
 		}	//ouvre le fichier
 
-		for ( int i=0; i<NPROC; i++) {
+		for ( int i=0; i<node.NPROCS; i++) {
 			double buff[N*nb_lignes];
 			for(int j=0; j<N*nb_lignes; j++){
 				fscanf (f, "%lf", (buff +j));
@@ -99,7 +105,7 @@ void matrix_pload( char file[], double* tab, int N, int NPROC, int nb_lignes, in
 		}
 		fclose (f);
 	}
-	if(rank!=0) MPI_Recv(tab, N*nb_lignes, MPI_DOUBLE, MPI_ANY_SOURCE, 99, MPI_COMM_WORLD, &status);
+	if(rank!=0) MPI_Recv(tab, N*nb_lignes, MPI_DOUBLE, MPI_ANY_SOURCE, 99, MPI_COMM_WORLD, &node.status);
 }
 
 
@@ -144,21 +150,22 @@ int main(int argc, char *argv[])
 	if(node.rank==0) displacement = 0;
 
 	// load matrix to localMatrix
-	matrix_pload(filename, (node.matrix+displacement), node.N, node.NPROCS, node.internal_lines, node.rank, node.status);
+	matrix_pload(filename, (node.matrix+displacement), node);
 
 	// set first and last line to -1
 	if(node.rank==0) setLineToConst(node.matrix, node.N, -1);
 	if(node.rank==node.NPROCS-1) setLineToConst(node.matrix+N*(node.lines-1), node.N, -1);
 
-	share(node);
+	share(node); 
 
 	if(node.rank==1) node.matrix[16] = 420;
 
-	laplace(&node.total_error, node.rank, N, node.lines, node.matrix);
+
+	laplace(&node);
 
 	if(node.rank==0){
 		node.total_error = sqrt(node.total_error);
-		printf("LOLI 28 DIT: %f\n", node.total_error);
+		printf("LOLI 42 DIT: %f\n", node.total_error);
 	}
 	share(node);
 
@@ -170,6 +177,7 @@ int main(int argc, char *argv[])
 			//printf("%f ", localMatrix[i]);
 		}
 		//printf("\n");
+
 	}
 	MPI_Finalize();
 	return 0;
