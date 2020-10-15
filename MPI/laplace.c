@@ -54,37 +54,37 @@ void laplace(NodeInfo * node){
 }
 
 
-
-void share(NodeInfo node){
+void share(NodeInfo * node){
 	/**
 	The order here is very important to avoid deadlocks !!!
 	Receive/send comes in pairs.
 
 	We only modify the POINTER tab, so no need to pass by pointer, the size of NodeInfo is limited
 	**/
-	int N = node.N, rank = node.rank, lines = node.lines;
-	double * tab = node.matrix;
+	int N = node->N, rank = node->rank, lines = node->lines;
+	double * tab = node->matrix;
 
-	if(node.NPROCS == 1) return;
+	if(node->NPROCS == 1) return;
 	if(rank == 0){
-		MPI_Send(node.matrix+N*(lines-2), N, MPI_DOUBLE, rank+1, 99, MPI_COMM_WORLD);
-		MPI_Recv(tab+N*(lines-1), N, MPI_DOUBLE, rank+1, 99, MPI_COMM_WORLD, &node.status);
+		MPI_Send(tab+N*(lines-2), N, MPI_DOUBLE, rank+1, 99, MPI_COMM_WORLD);
+		MPI_Recv(tab+N*(lines-1), N, MPI_DOUBLE, rank+1, 99, MPI_COMM_WORLD, &(node->status));
 	}
-	else if(rank == node.NPROCS-1){
-		MPI_Recv(tab, N, MPI_DOUBLE, rank-1, 99, MPI_COMM_WORLD, &node.status);
+	else if(rank == node->NPROCS-1){
+		MPI_Recv(tab, N, MPI_DOUBLE, rank-1, 99, MPI_COMM_WORLD, &(node->status));
 		MPI_Send(tab+N, N, MPI_DOUBLE, rank-1, 99, MPI_COMM_WORLD);
 	}
 	else{
 		// Receive from left, send to right | send to right, receive from left
-		MPI_Recv(tab, N, MPI_DOUBLE, rank-1, 99, MPI_COMM_WORLD, &node.status);
+		MPI_Recv(tab, N, MPI_DOUBLE, rank-1, 99, MPI_COMM_WORLD, &(node->status));
 		MPI_Send(tab+N, N, MPI_DOUBLE, rank-1, 99, MPI_COMM_WORLD);
 		MPI_Send(tab+N*(lines-2), N, MPI_DOUBLE, rank+1, 99, MPI_COMM_WORLD);
-		MPI_Recv(tab+N*(lines-1), N, MPI_DOUBLE, rank+1, 99, MPI_COMM_WORLD, &node.status);
+		MPI_Recv(tab+N*(lines-1), N, MPI_DOUBLE, rank+1, 99, MPI_COMM_WORLD, &(node->status));
 	}
 
 	// wait for all the messages of all the processes to be received
 	MPI_Barrier(MPI_COMM_WORLD);
 }
+
 
 void matrix_pload( char file[], double* tab, NodeInfo node) {
 	int N = node.N, rank = node.rank, nb_lignes = node.internal_lines;
@@ -118,6 +118,7 @@ void setLineToConst(double* tab, int size, double value){
 		tab[i] = value;
 	}
 }
+
 
 void init_load(char filename[], NodeInfo * node){
 	/*
@@ -160,8 +161,9 @@ void init_load(char filename[], NodeInfo * node){
 	if(node->rank==0) setLineToConst(node->matrix, N, -1);
 	if(node->rank==node->NPROCS-1) setLineToConst(node->matrix+(N*(node->lines-1)), N, -1);
 
-	share(*node);
+	share(node);
 }
+
 
 void print_node(NodeInfo node, int root){
 	if(node.rank != root) return;
@@ -177,31 +179,31 @@ void print_node(NodeInfo node, int root){
 		if( (i+1) % node.N == 0) printf("\n|");
 	}
 	printf("\n\n");
-
-
 }
+
 
 int main(int argc, char *argv[])
 {
-	double MIN_ERROR = 1.;
+	double MIN_ERROR = 5.;
 	char filename[250]="mat4";
 
 	MPI_Init(&argc, &argv);
 	NodeInfo node = {.N = 4, .total_error = MIN_ERROR*2};  // we will enter in a while so i set total_error > MIN_ERROR
 
-	
 	init_load(filename, &node);
 
+	// laplace algorithm
 	while(node.total_error>MIN_ERROR){
 		laplace(&node);
-		share(node);
+		share(&node);
 	}
 
+	// print to verif
 	print_node(node, 0);
 	MPI_Barrier(MPI_COMM_WORLD);
 	print_node(node, 1);
 
-	
+	free(node.matrix); // release tabs
 	MPI_Finalize();
 	return 0;
 }
