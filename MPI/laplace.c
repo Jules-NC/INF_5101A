@@ -54,7 +54,7 @@ void laplace(NodeInfo * node){
 	}
 	// Copy buffer into matrix, faster than a for
 
-	//memcpy(tab+N, fnew+N, N*(node->internal_lines-2)*sizeof(double));
+	//memcpy(tab+N, fnew+N, N*(lignes-1)*sizeof(double));
 	free(fnew);
 	
 	MPI_Allreduce(&error, &(node->total_error), 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
@@ -208,7 +208,7 @@ int main(int argc, char *argv[])
 {
 	struct timeval tv1, tv2;	/* for timing */
 	int status, duration;
-	double MIN_ERROR = 400.;
+	double MIN_ERROR = atoi(argv[3]);
 	NodeInfo node = {.N = atoi(argv[1]), .total_error = MIN_ERROR*2};  // we will enter in a while so i set total_error > MIN_ERROR
 	char filename[250];
 
