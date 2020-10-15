@@ -4,6 +4,7 @@
 
 #include <string.h>
 #include <math.h>
+#include <time.h>
 
 #include "mpi.h"
 
@@ -19,6 +20,9 @@ typedef struct {
 
 } NodeInfo;
 
+
+void print_node(NodeInfo node, int root);
+
 void laplace(NodeInfo * node){
 	/** 
 	* Here we do the laplace function ONE TIME, and write the total error in the NodeInfo structure of ALL NODES (bc why not) 
@@ -26,9 +30,9 @@ void laplace(NodeInfo * node){
 	int N = node->N, lignes = node->lines;
 	double* tab = node->matrix;
 
-	double fnew[N*lignes];
+	double * fnew = malloc(N*lignes*sizeof(double));
 	double error = 0;
-	for(int i=N; i<N*(lignes-1); i++){ 
+	for(int i=N; i<N*(lignes-1); i++){
 		if((i+1)%N*i%N == 0) { // If end or beginning of the line (i%N = begining and (i+1)%N = end)
 			fnew[i] = tab[i];
 			continue;
@@ -44,10 +48,14 @@ void laplace(NodeInfo * node){
 		error += (tab[i]-fnew[i])*(tab[i]-fnew[i]) ;
 	}
 
-	//memcpy(tab+N, fnew, N*(lignes-2)*sizeof(double));
+	// TODO: TEST SPEED DIFFERENCE	
 	for(int i=N; i<N*(lignes-1); i++){
 		tab[i] = fnew[i];	
 	}
+	// Copy buffer into matrix, faster than a for
+
+	//memcpy(tab+N, fnew+N, N*(node->internal_lines-2)*sizeof(double));
+	free(fnew);
 	
 	MPI_Allreduce(&error, &(node->total_error), 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 	node->total_error = sqrt(node->total_error);
@@ -89,6 +97,8 @@ void share(NodeInfo * node){
 void matrix_pload( char file[], double* tab, NodeInfo node) {
 	int N = node.N, rank = node.rank, nb_lignes = node.internal_lines;
 	if (rank == 0){		//si je suis main
+
+		fflush(0);
 		FILE *f;
 		if ((f = fopen (file, "r")) == NULL) {
 			perror ("matrix_load : fopen ");
@@ -96,7 +106,8 @@ void matrix_pload( char file[], double* tab, NodeInfo node) {
 		}	//ouvre le fichier
 
 		for ( int i=0; i<node.NPROCS; i++) {
-			double buff[N*nb_lignes];
+			printf("Loading block %d/%d\n", (i+1), node.NPROCS);
+			double * buff = malloc(N*nb_lignes*sizeof(double));
 			for(int j=0; j<N*nb_lignes; j++){
 				fscanf (f, "%lf", (buff +j));
 			}
@@ -104,6 +115,7 @@ void matrix_pload( char file[], double* tab, NodeInfo node) {
 			if(i!=0) MPI_Send(buff, N*nb_lignes, MPI_DOUBLE, i, 99, MPI_COMM_WORLD);
 			if(i==0) memcpy(tab, buff, N*nb_lignes*sizeof(double));
 
+			free(buff);
 			//printf("%d -> %d\n", rank, i);
 		}
 		fclose (f);
@@ -120,7 +132,7 @@ void setLineToConst(double* tab, int size, double value){
 }
 
 
-void init_load(char filename[], NodeInfo * node){
+int init_load(char filename[], NodeInfo * node){
 	/*
 		1: Init the values of the NodeInfo struct
 		2: Set the right size for each internal matrix of all nodes
@@ -141,6 +153,7 @@ void init_load(char filename[], NodeInfo * node){
 
 	if(node->internal_lines<2) {
 		printf("Hey mon ami ! La taille des blocs aux extremites est de %d, donc %d avec le recouvrement, ce qui ne permet aps d'acceder a la valeur 'en dessous', il faut minimum 3 lignes en tout. BISOUS\n", nb_lignes, nb_lignes+1);
+		return -1;
 	}
 
 	// different malloc if first or last block (different internal matrix size)
@@ -162,10 +175,15 @@ void init_load(char filename[], NodeInfo * node){
 	if(node->rank==node->NPROCS-1) setLineToConst(node->matrix+(N*(node->lines-1)), N, -1);
 
 	share(node);
+
+	return 0;
 }
 
 
 void print_node(NodeInfo node, int root){
+
+	MPI_Barrier(MPI_COMM_WORLD); // avoid interleaved prints
+
 	if(node.rank != root) return;
 
 	printf("|========[Node %d]========\n", node.rank);
@@ -175,34 +193,55 @@ void print_node(NodeInfo node, int root){
 	printf("|total_error: %f\n", node.total_error);
 	printf("|--------MATRIX--------\n|");
 	for(int i=0; i<node.N*node.lines; i++){
-		printf("%f ", node.matrix[i]);
+		if(node.matrix[i] >= 0) printf("%06.3f ", node.matrix[i]);
+		if(node.matrix[i] <= 0) printf("%06.3f ", node.matrix[i]);
+
 		if( (i+1) % node.N == 0) printf("\n|");
 	}
 	printf("\n\n");
+
+
 }
 
 
 int main(int argc, char *argv[])
 {
-	double MIN_ERROR = 5.;
-	char filename[250]="mat4";
+	struct timeval tv1, tv2;	/* for timing */
+	int status, duration;
+	double MIN_ERROR = 400.;
+	NodeInfo node = {.N = atoi(argv[1]), .total_error = MIN_ERROR*2};  // we will enter in a while so i set total_error > MIN_ERROR
+	char filename[250];
 
+	// set args
+	if(node.N < 0){printf("N must be greater than 3\n"); return -1;}
+	strcpy(filename, argv[2]);
+
+	// MPI-BEGIN !
 	MPI_Init(&argc, &argv);
-	NodeInfo node = {.N = 4, .total_error = MIN_ERROR*2};  // we will enter in a while so i set total_error > MIN_ERROR
 
-	init_load(filename, &node);
+	// load and error check
+	status = init_load(filename, &node);
+	if(status < 0) return status;
 
 	// laplace algorithm
+	gettimeofday( &tv1, (struct timezone*)0 );
+	int i = 0;
 	while(node.total_error>MIN_ERROR){
 		laplace(&node);
 		share(&node);
+		i++;
+		if(node.rank == 0) printf("iteration %d, error: %f\n", i, node.total_error);
 	}
+	gettimeofday( &tv2, (struct timezone*)0 );
+	duration = (tv2.tv_sec - tv1.tv_sec) * 1000000 + tv2.tv_usec - tv1.tv_usec;
 
 	// print to verif
-	print_node(node, 0);
-	MPI_Barrier(MPI_COMM_WORLD);
-	print_node(node, 1);
+	//print_node(node, 0);
+	//print_node(node, 1);
 
+	MPI_Barrier(MPI_COMM_WORLD);
+	if(node.rank==0)   	printf ("computation time: %10.8f sec.\n", duration/1000000.0);
+	
 	free(node.matrix); // release tabs
 	MPI_Finalize();
 	return 0;
