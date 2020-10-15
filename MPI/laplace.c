@@ -23,7 +23,6 @@ void laplace(NodeInfo * node){
 	/** 
 	* Here we do the laplace function ONE TIME, and write the total error in the NodeInfo structure of ALL NODES (bc why not) 
 	**/
-	 // we modify a non-pointer value (node.total_error), so need struct pointer to avoid copy
 	int N = node->N, lignes = node->lines;
 	double* tab = node->matrix;
 
@@ -51,6 +50,7 @@ void laplace(NodeInfo * node){
 	}
 	
 	MPI_Allreduce(&error, &(node->total_error), 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+	node->total_error = sqrt(node->total_error);
 }
 
 
@@ -100,15 +100,16 @@ void matrix_pload( char file[], double* tab, NodeInfo node) {
 			for(int j=0; j<N*nb_lignes; j++){
 				fscanf (f, "%lf", (buff +j));
 			}
+			// If rank==myself, don't send to avoid buffer deadlock
 			if(i!=0) MPI_Send(buff, N*nb_lignes, MPI_DOUBLE, i, 99, MPI_COMM_WORLD);
 			if(i==0) memcpy(tab, buff, N*nb_lignes*sizeof(double));
 
-			printf("%d -> %d\n", rank, i);
-
+			//printf("%d -> %d\n", rank, i);
 		}
 		fclose (f);
 	}
-	if(rank!=0) MPI_Recv(tab, N*nb_lignes, MPI_DOUBLE, MPI_ANY_SOURCE, 99, MPI_COMM_WORLD, &node.status);
+	// If rank==myself, don't receive bc no send
+	if(rank!=0) MPI_Recv(tab, N*nb_lignes, MPI_DOUBLE, 0, 99, MPI_COMM_WORLD, &node.status);
 }
 
 
@@ -119,6 +120,14 @@ void setLineToConst(double* tab, int size, double value){
 }
 
 void init_load(char filename[], NodeInfo * node){
+	/*
+		1: Init the values of the NodeInfo struct
+		2: Set the right size for each internal matrix of all nodes
+		3: load the data into those matrix
+		4: set the first and last lines to -1
+		5: do a share() to set the recoverement lines
+	*/
+
 	int N, nb_lignes;
 	// Init and set MPI rank and size
 	MPI_Comm_rank(MPI_COMM_WORLD, &(node->rank));
@@ -150,39 +159,49 @@ void init_load(char filename[], NodeInfo * node){
 	// set first and last line to -1 
 	if(node->rank==0) setLineToConst(node->matrix, N, -1);
 	if(node->rank==node->NPROCS-1) setLineToConst(node->matrix+(N*(node->lines-1)), N, -1);
+
+	share(*node);
+}
+
+void print_node(NodeInfo node, int root){
+	if(node.rank != root) return;
+
+	printf("|========[Node %d]========\n", node.rank);
+	printf("|N: %d\n", node.N);
+	printf("|internal_lines: %d\n", node.internal_lines);
+	printf("|ltotal lines: %d\n", node.lines);
+	printf("|total_error: %f\n", node.total_error);
+	printf("|--------MATRIX--------\n|");
+	for(int i=0; i<node.N*node.lines; i++){
+		printf("%f ", node.matrix[i]);
+		if( (i+1) % node.N == 0) printf("\n|");
+	}
+	printf("\n\n");
+
+
 }
 
 int main(int argc, char *argv[])
 {
+	double MIN_ERROR = 1.;
 	char filename[250]="mat4";
-	NodeInfo node = {.N = 4, .total_error = 0};
 
 	MPI_Init(&argc, &argv);
+	NodeInfo node = {.N = 4, .total_error = MIN_ERROR*2};  // we will enter in a while so i set total_error > MIN_ERROR
+
 	
 	init_load(filename, &node);
-	share(node); 
 
-	if(node.rank==1) node.matrix[16] = 420;
-
-
-	laplace(&node);
-
-	if(node.rank==0){
-		node.total_error = sqrt(node.total_error);
-		printf("LOLI 42 DIT: %f\n", node.total_error);
+	while(node.total_error>MIN_ERROR){
+		laplace(&node);
+		share(node);
 	}
-	share(node);
 
+	print_node(node, 0);
+	MPI_Barrier(MPI_COMM_WORLD);
+	print_node(node, 1);
 
-	if (node.rank == node.NPROCS-1)
-	{
-		printf("Size local matrix: %d\n", node.lines);
-		for(int i=0; i<node.N*node.lines; i++){
-			printf("%f ", node.matrix[i]);
-		}
-		printf("\n");
-
-	}
+	
 	MPI_Finalize();
 	return 0;
 }
