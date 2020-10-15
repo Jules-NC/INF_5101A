@@ -20,6 +20,9 @@ typedef struct {
 } NodeInfo;
 
 void laplace(NodeInfo * node){
+	/** 
+	* Here we do the laplace function ONE TIME, and write the total error in the NodeInfo structure of ALL NODES (bc why not) 
+	**/
 	 // we modify a non-pointer value (node.total_error), so need struct pointer to avoid copy
 	int N = node->N, lignes = node->lines;
 	double* tab = node->matrix;
@@ -115,47 +118,48 @@ void setLineToConst(double* tab, int size, double value){
 	}
 }
 
+void init_load(char filename[], NodeInfo * node){
+	int N, nb_lignes;
+	// Init and set MPI rank and size
+	MPI_Comm_rank(MPI_COMM_WORLD, &(node->rank));
+	MPI_Comm_size(MPI_COMM_WORLD, &(node->NPROCS));
+
+	N = node->N;
+	nb_lignes = node->N/node->NPROCS;
+
+	node->internal_lines = nb_lignes;
+
+	if(node->internal_lines<2) {
+		printf("Hey mon ami ! La taille des blocs aux extremites est de %d, donc %d avec le recouvrement, ce qui ne permet aps d'acceder a la valeur 'en dessous', il faut minimum 3 lignes en tout. BISOUS\n", nb_lignes, nb_lignes+1);
+	}
+
+	// different malloc if first or last block (different internal matrix size)
+	if(node->rank==0 || node->rank==node->NPROCS-1){
+		node->matrix = malloc(sizeof(double)*N*(node->internal_lines+1));
+		node->lines = node->internal_lines+1;
+		memset(node->matrix, 0, sizeof(double)*N*(node->internal_lines+1));
+	} else {
+		node->matrix = malloc(sizeof(double)*N*(node->internal_lines+2));
+		node->lines = node->internal_lines+2;
+		memset(node->matrix, 0, sizeof(double)*N*(node->internal_lines+2));
+	}
+
+	// load matrix to localMatrix with a stride of N except for rank 0 (a*0 = 0)
+	matrix_pload(filename, (node->matrix+(N*(node->rank!=0))), *node);
+
+	// set first and last line to -1 
+	if(node->rank==0) setLineToConst(node->matrix, N, -1);
+	if(node->rank==node->NPROCS-1) setLineToConst(node->matrix+(N*(node->lines-1)), N, -1);
+}
 
 int main(int argc, char *argv[])
 {
-	char filename[250]="mat5000";
-	int nb_lignes;
-	NodeInfo node = {.N = 512, .total_error = 0};
-	int N = node.N;
+	char filename[250]="mat4";
+	NodeInfo node = {.N = 4, .total_error = 0};
 
 	MPI_Init(&argc, &argv);
-	MPI_Comm_rank(MPI_COMM_WORLD, &node.rank);
-	MPI_Comm_size(MPI_COMM_WORLD, &node.NPROCS);
-
 	
-	nb_lignes = node.N/node.NPROCS;
-	node.internal_lines = nb_lignes;
-	if(nb_lignes<2) {
-		printf("Hey mon ami ! La taille des blocs aux extremites est de %d, donc %d avec le recouvrement, ce qui ne permet aps d'acceder a la valeur 'en dessous', il faut minimum 3 lignes en tout. BISOUS\n", nb_lignes, nb_lignes+1);
-		return -1;
-	}
-
-	// localmatrix init by NPROC ID (0 and NPROC-1 are 1 line smaller)
-	if(node.rank==0 || node.rank==node.NPROCS-1){
-		node.matrix = malloc(sizeof(double)*N*(node.internal_lines+1));
-		node.lines = node.internal_lines+1;
-		memset(node.matrix, 0, sizeof(double)*N*(node.internal_lines+1));
-	} else {
-		node.matrix = malloc(sizeof(double)*N*(node.internal_lines+2));
-		node.lines = node.internal_lines+2;
-		memset(node.matrix, 0, sizeof(double)*N*(node.internal_lines+2));
-	}
-
-	int displacement = node.N;
-	if(node.rank==0) displacement = 0;
-
-	// load matrix to localMatrix
-	matrix_pload(filename, (node.matrix+displacement), node);
-
-	// set first and last line to -1
-	if(node.rank==0) setLineToConst(node.matrix, node.N, -1);
-	if(node.rank==node.NPROCS-1) setLineToConst(node.matrix+N*(node.lines-1), node.N, -1);
-
+	init_load(filename, &node);
 	share(node); 
 
 	if(node.rank==1) node.matrix[16] = 420;
@@ -170,13 +174,13 @@ int main(int argc, char *argv[])
 	share(node);
 
 
-	if (node.rank == 0)
+	if (node.rank == node.NPROCS-1)
 	{
 		printf("Size local matrix: %d\n", node.lines);
-		for(int i=0; i<N*node.lines; i++){
-			//printf("%f ", localMatrix[i]);
+		for(int i=0; i<node.N*node.lines; i++){
+			printf("%f ", node.matrix[i]);
 		}
-		//printf("\n");
+		printf("\n");
 
 	}
 	MPI_Finalize();
