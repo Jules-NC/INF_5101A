@@ -22,6 +22,7 @@ typedef struct {
 void matrix_pload( char file[], NodeInfo node) {
     double * tab = node.matrix;
 	int N = node.N, rank = node.rank, nb_lignes = node.lines;
+    MPI_Status status = node.status;
 	if (rank == 0){		//si je suis main
 
 		fflush(0);
@@ -47,7 +48,7 @@ void matrix_pload( char file[], NodeInfo node) {
 		fclose (f);
 	}
 	// If rank==myself, don't receive bc no send
-	if(rank!=0) MPI_Recv(tab, N*nb_lignes, MPI_DOUBLE, 0, 99, MPI_COMM_WORLD, &node.status);
+	if(rank!=0) MPI_Recv(tab, N*nb_lignes, MPI_DOUBLE, 0, 99, MPI_COMM_WORLD, &status);
 }
 
 
@@ -72,22 +73,18 @@ void print_node(NodeInfo node, int root){
 
 }
 
-void parallel_write(char filename[], NodeInfo node){
-    MPI_File myfile; 
-    int BUFFSIZE = node.lines*node.N;
-    double * buf = node.matrix;     
 
-    // Open the file
+void parallel_write_double(char filename[], double* buf, int N, int lines, int rank, int NPROCS){
+    MPI_File myfile; 
+    int BUFFSIZE = lines*N;
+
     MPI_File_open (MPI_COMM_WORLD, filename, MPI_MODE_CREATE | MPI_MODE_WRONLY, MPI_INFO_NULL, &myfile);
-    // Set the file view
-    MPI_File_set_view(myfile, node.rank*BUFFSIZE*sizeof(double), MPI_DOUBLE, MPI_DOUBLE, "native", MPI_INFO_NULL);
-    // Write buf to the file
+    MPI_File_set_view(myfile, rank*BUFFSIZE*sizeof(double), MPI_DOUBLE, MPI_DOUBLE, "native", MPI_INFO_NULL);
     MPI_File_write(myfile, buf, BUFFSIZE, MPI_DOUBLE, MPI_STATUS_IGNORE);
-    // Close the file
     MPI_File_close(&myfile);
 
-    if(node.rank==0){
-        printf("%d processes wrote %'d double\n", node.NPROCS, node.NPROCS*BUFFSIZE);
+    if(rank==0){
+        printf("%d processes wrote %'d double\n", NPROCS, NPROCS*BUFFSIZE);
     }
 }
 
@@ -111,13 +108,13 @@ int main(int argc, char* argv[]){
     node.matrix = (double*) malloc(node.N*node.lines*sizeof(double));
 
     matrix_pload(filename, node);
-    print_node(node, 3);
+    //print_node(node, 3);
 
-    parallel_write(destname, node);
+    parallel_write_double(destname, node.matrix, node.N, node.lines, node.rank, node.NPROCS);
 
     if(node.rank == 0){
         printf("Done\n");
-        printf("Done %s\n", destname);
+        printf("Done 42 %s\n", destname);
 
     }
 

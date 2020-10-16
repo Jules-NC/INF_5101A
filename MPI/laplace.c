@@ -1,4 +1,3 @@
-
 #include <stdlib.h>
 #include <stdio.h>
 
@@ -24,9 +23,12 @@ typedef struct {
 void print_node(NodeInfo node, int root);
 
 void laplace(NodeInfo * node){
+	
 	/** 
 	* Here we do the laplace function ONE TIME, and write the total error in the NodeInfo structure of ALL NODES (bc why not) 
 	**/
+
+
 	int N = node->N, lignes = node->lines;
 	double* tab = node->matrix;
 
@@ -66,9 +68,9 @@ void share(NodeInfo * node){
 	/**
 	The order here is very important to avoid deadlocks !!!
 	Receive/send comes in pairs.
-
 	We only modify the POINTER tab, so no need to pass by pointer, the size of NodeInfo is limited
 	**/
+
 	int N = node->N, rank = node->rank, lines = node->lines;
 	double * tab = node->matrix;
 
@@ -141,10 +143,16 @@ int init_load(char filename[], NodeInfo * node){
 		5: do a share() to set the recoverement lines
 	*/
 
+
 	int N, nb_lignes;
 	// Init and set MPI rank and size
 	MPI_Comm_rank(MPI_COMM_WORLD, &(node->rank));
 	MPI_Comm_size(MPI_COMM_WORLD, &(node->NPROCS));
+
+	if(node->NPROCS ==1) {
+		puts("I don't want to do the NPROCS=1 case, in this ONLY CASE, the memory management is different, do it yourself it's really simple. I'M NOT HERE TO SOUFFRIRE OK ??!!!");
+		return -1;
+	}
 
 	N = node->N;
 	nb_lignes = node->N/node->NPROCS;
@@ -203,14 +211,25 @@ void print_node(NodeInfo node, int root){
 
 }
 
+void parallel_write_double(char filename[], double* buf, int N, int lines, int rank, int NPROCS){
+	MPI_File myfile; 
+	int BUFFSIZE = lines*N;
+
+	MPI_File_open (MPI_COMM_WORLD, filename, MPI_MODE_CREATE | MPI_MODE_WRONLY, MPI_INFO_NULL, &myfile);
+	MPI_File_set_view(myfile, rank*BUFFSIZE*sizeof(double), MPI_DOUBLE, MPI_DOUBLE, "native", MPI_INFO_NULL);
+	MPI_File_write(myfile, buf, BUFFSIZE, MPI_DOUBLE, MPI_STATUS_IGNORE);
+	MPI_File_close(&myfile);
+
+	if(rank==0){
+		printf("%d processes wrote %'d double\n", NPROCS, NPROCS*BUFFSIZE);
+	}
+}
+
 
 int main(int argc, char *argv[])
 {
-	printf("LOL2rir: %ld", sizeof(float));
-	printf("LOL2rir: %ld", sizeof(int));
 
-	
-	struct timeval tv1, tv2;	/* for timing */
+	struct timeval tv1, tv2;	// for timing 
 	int status, duration;
 	double MIN_ERROR = atoi(argv[3]);
 	NodeInfo node = {.N = atoi(argv[1]), .total_error = MIN_ERROR*2};  // we will enter in a while so i set total_error > MIN_ERROR
@@ -219,6 +238,7 @@ int main(int argc, char *argv[])
 	// set args
 	if(node.N < 0){printf("N must be greater than 3\n"); return -1;}
 	strcpy(filename, argv[2]);
+
 
 	// MPI-BEGIN !
 	MPI_Init(&argc, &argv);
@@ -239,12 +259,15 @@ int main(int argc, char *argv[])
 	gettimeofday( &tv2, (struct timezone*)0 );
 	duration = (tv2.tv_sec - tv1.tv_sec) * 1000000 + tv2.tv_usec - tv1.tv_usec;
 
-	// print to verif
-	//print_node(node, 0);
-	//print_node(node, 1);
+	int displacement = node.N;
+	if(node.rank==0) displacement = 0;
+	parallel_write_double("matrix_result", node.matrix+displacement, node.N, node.internal_lines, node.rank, node.NPROCS);
 
-	MPI_Barrier(MPI_COMM_WORLD);
-	if(node.rank==0)   	printf ("computation time: %10.8f sec.\n", duration/1000000.0);
+	// print to verif
+	print_node(node, 0);
+	print_node(node, 1);
+
+	if(node.rank==0) printf ("computation time: %10.8f sec.\n", duration/1000000.0);
 	
 	free(node.matrix); // release tabs
 	MPI_Finalize();
