@@ -22,6 +22,33 @@ typedef struct {
 
 void print_node(NodeInfo node, int root);
 
+
+void parallel_read_double(char filename[], double* buffer, int rank, int NPROCS){
+	MPI_File myfile;
+	MPI_Offset filesize;
+	int buffersize;
+	int readcount;
+	MPI_Status status;
+
+	MPI_File_open (MPI_COMM_WORLD, filename, MPI_MODE_RDONLY, MPI_INFO_NULL, &myfile);
+
+	// Calculate how many elements each processor gets
+	MPI_File_get_size(myfile, &filesize);
+	filesize = filesize/sizeof(double);
+	buffersize = filesize/NPROCS;
+
+	// BUFFER IS ALREADY MALLOCATED !!!
+	// buffer = (double*) malloc(buffersize*sizeof(double));
+
+	MPI_File_set_view(myfile, rank*buffersize*sizeof(double), MPI_DOUBLE, MPI_DOUBLE, "native", MPI_INFO_NULL);
+	MPI_File_read(myfile, buffer, buffersize, MPI_DOUBLE, &status);
+  	MPI_Get_count(&status, MPI_DOUBLE, &readcount);
+	printf("Process %2d read %d characters\n", rank, readcount);
+
+	MPI_File_close(&myfile);
+}
+
+
 void laplace(NodeInfo * node){
 	
 	/** 
@@ -150,13 +177,12 @@ int init_load(char filename[], NodeInfo * node){
 	MPI_Comm_size(MPI_COMM_WORLD, &(node->NPROCS));
 
 	if(node->NPROCS ==1) {
-		puts("I don't want to do the NPROCS=1 case, in this ONLY CASE, the memory management is different, do it yourself it's really simple. I'M NOT HERE TO SOUFFRIRE OK ??!!!");
+		puts("I don't want to do the NPROCS=1 case, in this ONLY CASE, the memory management is different, do it yourself it's really simple. I'M NOT HERE TO SOUFFRIRE OK !!!");
 		return -1;
 	}
 
 	N = node->N;
 	nb_lignes = node->N/node->NPROCS;
-
 	node->internal_lines = nb_lignes;
 
 	if(node->internal_lines<2) {
@@ -176,7 +202,8 @@ int init_load(char filename[], NodeInfo * node){
 	}
 
 	// load matrix to localMatrix with a stride of N except for rank 0 (a*0 = 0)
-	matrix_pload(filename, (node->matrix+(N*(node->rank!=0))), *node);
+	parallel_read_double(filename, (node->matrix+(N*(node->rank!=0))), node->rank, node->NPROCS);
+	// matrix_pload(filename, (node->matrix+(N*(node->rank!=0))), *node);
 
 	// set first and last line to -1 
 	if(node->rank==0) setLineToConst(node->matrix, N, -1);
@@ -207,9 +234,8 @@ void print_node(NodeInfo node, int root){
 		if( (i+1) % node.N == 0) printf("\n|");
 	}
 	printf("\n\n");
-
-
 }
+
 
 void parallel_write_double(char filename[], double* buf, int N, int lines, int rank, int NPROCS){
 	MPI_File myfile; 
@@ -242,7 +268,7 @@ int main(int argc, char *argv[])
 
 	// MPI-BEGIN !
 	MPI_Init(&argc, &argv);
-
+	
 	// load and error check
 	status = init_load(filename, &node);
 	if(status < 0) return status;
@@ -264,12 +290,12 @@ int main(int argc, char *argv[])
 	parallel_write_double("matrix_result", node.matrix+displacement, node.N, node.internal_lines, node.rank, node.NPROCS);
 
 	// print to verif
-	print_node(node, 0);
-	print_node(node, 1);
+	//print_node(node, 0);
+	//print_node(node, 1);
 
 	if(node.rank==0) printf ("computation time: %10.8f sec.\n", duration/1000000.0);
-	
 	free(node.matrix); // release tabs
+	
 	MPI_Finalize();
 	return 0;
 }
