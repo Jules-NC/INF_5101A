@@ -257,7 +257,7 @@ int main(int argc, char *argv[])
 
 	struct timeval tv1, tv2;	// for timing 
 	int status, duration;
-	double MIN_ERROR = atoi(argv[3]);
+	double MIN_ERROR = atof(argv[3]);
 	NodeInfo node = {.N = atoi(argv[1]), .total_error = MIN_ERROR*2};  // we will enter in a while so i set total_error > MIN_ERROR
 	char filename[250];
 
